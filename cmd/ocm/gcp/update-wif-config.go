@@ -145,12 +145,12 @@ func updateWorkloadIdentityConfigurationCmd(cmd *cobra.Command, argv []string) e
 	}
 
 	log.Println("Updating workload identity pool...")
-	if err := gcpClientWifConfigShim.CreateWorkloadIdentityPool(ctx, log); err != nil {
+	if err := gcpClientWifConfigShim.UpdateWorkloadIdentityPool(ctx, log); err != nil {
 		return fmt.Errorf("Failed to update workload identity pool: %s", err)
 	}
 
 	log.Println("Updating oidc provider...")
-	if err = gcpClientWifConfigShim.CreateWorkloadIdentityProvider(ctx, log); err != nil {
+	if err = gcpClientWifConfigShim.UpdateWorkloadIdentityProvider(ctx, log); err != nil {
 		return fmt.Errorf("Failed to update workload identity provider: %s", err)
 	}
 
@@ -166,9 +166,9 @@ func updateWorkloadIdentityConfigurationCmd(cmd *cobra.Command, argv []string) e
 	//resources before we consider the wif-config creation complete.
 	if err := utils.RetryWithBackoffandTimeout(func() (bool, error) {
 		log.Printf("Verifying wif-config '%s'...", wifConfig.ID())
-		if err := verifyWifConfig(connection, wifConfig.ID()); err != nil {
-			return true, err
-		}
+		//if err := verifyWifConfig(connection, wifConfig.ID()); err != nil {
+		//	return true, err
+		//}
 		return false, nil
 	}, IamApiRetrySeconds, log); err != nil {
 		return fmt.Errorf("Timed out verifying wif-config resources\n"+

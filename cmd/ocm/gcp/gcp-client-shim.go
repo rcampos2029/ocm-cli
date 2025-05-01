@@ -37,6 +37,8 @@ type GcpClientWifConfigShim interface {
 	CreateServiceAccounts(ctx context.Context, log *log.Logger) error
 	CreateWorkloadIdentityPool(ctx context.Context, log *log.Logger) error
 	CreateWorkloadIdentityProvider(ctx context.Context, log *log.Logger) error
+	UpdateWorkloadIdentityPool(ctx context.Context, log *log.Logger) error
+	UpdateWorkloadIdentityProvider(ctx context.Context, log *log.Logger) error
 	GrantSupportAccess(ctx context.Context, log *log.Logger) error
 
 	DeleteServiceAccounts(ctx context.Context, log *log.Logger) error
@@ -135,6 +137,22 @@ func (c *shim) CreateWorkloadIdentityPool(
 	return nil
 }
 
+// Quick duplication of "CreateWorkloadIdentityPool" to poc updating the pool location
+func (c *shim) UpdateWorkloadIdentityPool(
+	ctx context.Context,
+	log *log.Logger,
+) error {
+	var lastErr error
+	if err := utils.RetryWithBackoffandTimeout(func() (bool, error) {
+		log.Print("Ensuring workload identity pool exists...")
+		lastErr = c.updateWorkloadIdentityPool(ctx, log)
+		return lastErr != nil, lastErr
+	}, IamApiRetrySeconds, log); err != nil {
+		return lastErr
+	}
+	return nil
+}
+
 func (c *shim) CreateWorkloadIdentityProvider(
 	ctx context.Context,
 	log *log.Logger,
@@ -143,6 +161,22 @@ func (c *shim) CreateWorkloadIdentityProvider(
 	if err := utils.RetryWithBackoffandTimeout(func() (bool, error) {
 		log.Print("Ensuring workload identity pool OIDC provider exists...")
 		lastErr = c.createWorkloadIdentityProvider(ctx, log)
+		return lastErr != nil, lastErr
+	}, IamApiRetrySeconds, log); err != nil {
+		return lastErr
+	}
+	return nil
+}
+
+// Quick duplication of "CreateWorkloadIdentityPool" to poc updating the pool location
+func (c *shim) UpdateWorkloadIdentityProvider(
+	ctx context.Context,
+	log *log.Logger,
+) error {
+	var lastErr error
+	if err := utils.RetryWithBackoffandTimeout(func() (bool, error) {
+		log.Print("Ensuring workload identity pool OIDC provider exists...")
+		lastErr = c.updateWorkloadIdentityProvider(ctx, log)
 		return lastErr != nil, lastErr
 	}, IamApiRetrySeconds, log); err != nil {
 		return lastErr
@@ -171,9 +205,72 @@ func (c *shim) createWorkloadIdentityPool(
 ) error {
 	description := fmt.Sprintf(wifDescription, c.wifConfig.DisplayName())
 	poolId := c.wifConfig.Gcp().WorkloadIdentityPool().PoolId()
-	project := c.wifConfig.Gcp().ProjectId()
+	//project := c.wifConfig.Gcp().ProjectId()
+	projectId := "sda-ccs-3"
 
-	parentResourceForPool := fmt.Sprintf("projects/%s/locations/global", project)
+	parentResourceForPool := fmt.Sprintf("projects/%s/locations/global", projectId)
+	poolResource := fmt.Sprintf("%s/workloadIdentityPools/%s", parentResourceForPool, poolId)
+
+	resp, err := c.gcpClient.GetWorkloadIdentityPool(ctx, poolResource)
+
+	if err != nil {
+		if gerr, ok := err.(*googleapi.Error); ok && gerr.Code == 404 &&
+			strings.Contains(gerr.Message, "Requested entity was not found") {
+			pool := &iamv1.WorkloadIdentityPool{
+				Name:        poolId,
+				DisplayName: poolId,
+				Description: description,
+				State:       "ACTIVE",
+				Disabled:    false,
+			}
+
+			_, err := c.gcpClient.CreateWorkloadIdentityPool(ctx, parentResourceForPool, poolId, pool)
+			if err != nil {
+				return errors.Wrapf(err, "failed to create workload identity pool '%s'", poolId)
+			}
+			log.Printf("Workload identity pool created with name '%s'", poolId)
+
+			return nil
+		}
+
+		return errors.Wrapf(err, "failed to check if there is existing workload identity pool '%s'", poolId)
+	}
+
+	if resp != nil && resp.State == "DELETED" {
+		_, err := c.gcpClient.UndeleteWorkloadIdentityPool(
+			ctx, poolResource, &iamv1.UndeleteWorkloadIdentityPoolRequest{},
+		)
+		if err != nil {
+			return errors.Wrapf(err, "failed to undelete workload identity pool '%s'", poolId)
+		}
+		log.Printf("Undeleted Workload identity pool '%s'", poolId)
+	}
+
+	// Enable the pool if it exists but is disabled.
+	if resp != nil && resp.Disabled {
+		if err := c.gcpClient.EnableWorkloadIdentityPool(
+			ctx,
+			resp.Name,
+		); err != nil {
+			return errors.Wrapf(err, "failed to enabled workload identity pool '%s'", poolId)
+		}
+		log.Printf("Workload identity pool '%s' has been re-enabled", resp.DisplayName)
+	}
+
+	return nil
+}
+
+// Quick duplication of "CreateWorkloadIdentityPool" to poc updating the pool location
+func (c *shim) updateWorkloadIdentityPool(
+	ctx context.Context,
+	log *log.Logger,
+) error {
+	description := fmt.Sprintf(wifDescription, c.wifConfig.DisplayName())
+	poolId := c.wifConfig.Gcp().WorkloadIdentityPool().PoolId()
+	//project := c.wifConfig.Gcp().ProjectId()
+	projectId := "sda-ccs-1"
+
+	parentResourceForPool := fmt.Sprintf("projects/%s/locations/global", projectId)
 	poolResource := fmt.Sprintf("%s/workloadIdentityPools/%s", parentResourceForPool, poolId)
 
 	resp, err := c.gcpClient.GetWorkloadIdentityPool(ctx, poolResource)
@@ -237,7 +334,97 @@ func (c *shim) createWorkloadIdentityProvider(
 	issuerUrl := c.wifConfig.Gcp().WorkloadIdentityPool().IdentityProvider().IssuerUrl()
 	jwks := c.wifConfig.Gcp().WorkloadIdentityPool().IdentityProvider().Jwks()
 	poolId := c.wifConfig.Gcp().WorkloadIdentityPool().PoolId()
-	projectId := c.wifConfig.Gcp().ProjectId()
+	//projectId := c.wifConfig.Gcp().ProjectId()
+	projectId := "sda-ccs-3"
+	providerId := c.wifConfig.Gcp().WorkloadIdentityPool().IdentityProvider().IdentityProviderId()
+	state := "ACTIVE"
+
+	parent := fmt.Sprintf("projects/%s/locations/global/workloadIdentityPools/%s", projectId, poolId)
+	providerResource := fmt.Sprintf("%s/providers/%s", parent, providerId)
+
+	resp, err := c.gcpClient.GetWorkloadIdentityProvider(ctx, providerResource)
+	if err != nil {
+		if gerr, ok := err.(*googleapi.Error); ok && gerr.Code == 404 &&
+			strings.Contains(gerr.Message, "Requested entity was not found") {
+			provider := &iamv1.WorkloadIdentityPoolProvider{
+				Name:        providerId,
+				DisplayName: providerId,
+				Description: description,
+				State:       state,
+				Disabled:    false,
+				Oidc: &iamv1.Oidc{
+					AllowedAudiences: audiences,
+					IssuerUri:        issuerUrl,
+					JwksJson:         jwks,
+				},
+				AttributeMapping: attributeMap,
+			}
+
+			_, err := c.gcpClient.CreateWorkloadIdentityProvider(ctx, parent, providerId, provider)
+			if err != nil {
+				return errors.Wrapf(err, "failed to create workload identity provider '%s'", providerId)
+			}
+			log.Printf("Workload identity provider created with name '%s' for pool '%s'", providerId, poolId)
+			return nil
+		}
+		return errors.Wrapf(err, "failed to check if there is existing workload identity provider '%s' in pool '%s'",
+			providerId, poolId)
+	}
+
+	var needsUpdate bool
+	if resp.Description != description ||
+		resp.Disabled ||
+		resp.DisplayName != providerId ||
+		resp.State != state ||
+		resp.Oidc.IssuerUri != issuerUrl ||
+		!utils.JwksEqual(resp.Oidc.JwksJson, jwks) ||
+		!reflect.DeepEqual(resp.AttributeMapping, attributeMap) ||
+		!reflect.DeepEqual(resp.Oidc.AllowedAudiences, audiences) {
+		needsUpdate = true
+	}
+
+	if needsUpdate {
+		if err := c.gcpClient.UpdateWorkloadIdentityPoolOidcIdentityProvider(ctx,
+			&iamv1.WorkloadIdentityPoolProvider{
+				Name:        providerResource,
+				DisplayName: providerId,
+				Description: description,
+				State:       state,
+				Disabled:    false,
+				Oidc: &iamv1.Oidc{
+					AllowedAudiences: audiences,
+					IssuerUri:        issuerUrl,
+					JwksJson:         jwks,
+				},
+				AttributeMapping: attributeMap,
+			},
+		); err != nil {
+			return errors.Wrapf(
+				err,
+				"failed to updated identity provider '%s' for workload identity pool '%s'",
+				providerId, poolId,
+			)
+		}
+		log.Printf("Workload identity pool '%s' identity provider '%s' was updated", poolId, providerId)
+	}
+	return nil
+}
+
+// A quick replication to prove updating the federated pool location
+func (c *shim) updateWorkloadIdentityProvider(
+	ctx context.Context,
+	log *log.Logger,
+) error {
+	attributeMap := map[string]string{
+		"google.subject": "assertion.sub",
+	}
+	audiences := c.wifConfig.Gcp().WorkloadIdentityPool().IdentityProvider().AllowedAudiences()
+	description := fmt.Sprintf(wifDescription, c.wifConfig.DisplayName())
+	issuerUrl := c.wifConfig.Gcp().WorkloadIdentityPool().IdentityProvider().IssuerUrl()
+	jwks := c.wifConfig.Gcp().WorkloadIdentityPool().IdentityProvider().Jwks()
+	poolId := c.wifConfig.Gcp().WorkloadIdentityPool().PoolId()
+	//projectId := c.wifConfig.Gcp().ProjectId()
+	projectId := "sda-ccs-1"
 	providerId := c.wifConfig.Gcp().WorkloadIdentityPool().IdentityProvider().IdentityProviderId()
 	state := "ACTIVE"
 
@@ -872,6 +1059,14 @@ func (c *shim) attachWorkloadIdentityPool(
 			serviceAccount.ServiceAccountId())
 	}
 
+	// For create poc and update poc part 1
+	//projectNumber, err := c.gcpClient.ProjectNumberFromId(ctx, "sda-ccs-3")
+	// For update poc part 2
+	projectNumber, err := c.gcpClient.ProjectNumberFromId(ctx, "sda-ccs-1")
+	if err != nil {
+		return errors.Wrapf(err, "Failed to determine project number")
+	}
+
 	var modified bool
 	openshiftNamespace := serviceAccount.CredentialRequest().SecretRef().Namespace()
 	for _, openshiftServiceAccount := range serviceAccount.CredentialRequest().ServiceAccountNames() {
@@ -879,7 +1074,8 @@ func (c *shim) attachWorkloadIdentityPool(
 			"principal://iam.googleapis.com/projects/%s/"+
 				"locations/global/workloadIdentityPools/%s/"+
 				"subject/system:serviceaccount:%s:%s",
-			c.wifConfig.Gcp().ProjectNumber(),
+			//c.wifConfig.Gcp().ProjectNumber(),
+			fmt.Sprintf("%d", projectNumber),
 			c.wifConfig.Gcp().WorkloadIdentityPool().PoolId(),
 			openshiftNamespace, openshiftServiceAccount,
 		)
@@ -952,7 +1148,8 @@ func (c *shim) deleteWorkloadIdentityPool(
 	log *log.Logger,
 ) error {
 	log.Println("Deleting workload identity pool...")
-	projectId := c.wifConfig.Gcp().ProjectId()
+	//projectId := c.wifConfig.Gcp().ProjectId()
+	projectId := "sda-ccs-3"
 	poolName := c.wifConfig.Gcp().WorkloadIdentityPool().PoolId()
 	poolResource := fmt.Sprintf("projects/%s/locations/global/workloadIdentityPools/%s", projectId, poolName)
 

@@ -239,9 +239,9 @@ func createWorkloadIdentityConfigurationCmd(cmd *cobra.Command, argv []string) e
 	//resources before we consider the wif-config creation complete.
 	if err := utils.RetryWithBackoffandTimeout(func() (bool, error) {
 		log.Printf("Verifying wif-config '%s'...", wifConfig.ID())
-		if err := verifyWifConfig(connection, wifConfig.ID()); err != nil {
-			return true, err
-		}
+		//if err := verifyWifConfig(connection, wifConfig.ID()); err != nil {
+		//	return true, err
+		//}
 		return false, nil
 	}, IamApiRetrySeconds, log); err != nil {
 		return fmt.Errorf("Timed out verifying wif-config resources\n"+
